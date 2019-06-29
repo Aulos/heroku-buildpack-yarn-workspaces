@@ -1,8 +1,10 @@
-#!/bin/sh
+#!/bin/bash
 
+BP_DIR=$(cd "$(dirname "${0:-}")"; cd ..; pwd)
 BUILD_DIR=$1
 CACHE_DIR=$2
 ENV_DIR=$3
+JQ="$BP_DIR/../*/vendor/jq-$(uname | tr '[:upper:]' '[:lower:]')"
 
 if [ ! -f "$ENV_DIR/APP_ROOT" ]; then
   echo "APP_ROOT not set. Aborting."
@@ -21,5 +23,51 @@ rsync -r "$BUILD_DIR/$APP_ROOT/" $BUILD_DIR/ --exclude "node_modules"
 
 rm -rf "$BUILD_DIR/$APP_ROOT"
 
-yarn run build || true
+# based on heroku-buildpack-nodejs:
+run_build_script() {
+  local build_dir=${1:-}
+  local has_build_script has_heroku_build_script
 
+  has_build_script=$(has_script "$build_dir/package.json" "build")
+  has_heroku_build_script=$(has_script "$build_dir/package.json" "heroku-postbuild")
+
+  if [[ "$has_heroku_build_script" == "true" ]] && [[ "$has_build_script" == "true" ]]; then
+    echo "Detected both \"build\" and \"heroku-postbuild\" scripts"
+    run_yarn_script "$build_dir" 'heroku-postbuild'
+  elif [[ "$has_heroku_build_script" == "true" ]]; then
+    run_yarn_script "$build_dir" 'heroku-postbuild'
+  elif [[ "$has_build_script" == "true" ]]; then
+    run_yarn_script "$build_dir" 'build'
+  fi
+}
+
+has_script() {
+  local file="$1"
+  local key="$2"
+
+  if test -f "$file"; then
+    # shellcheck disable=SC2002
+    cat "$file" | $JQ ".[\"scripts\"] | has(\"$key\")"
+  else
+    echo "false"
+  fi
+}
+
+run_yarn_script() {
+  local build_dir=${1:-}
+  local script_name=${2:-}
+  local has_script_name
+  local script
+
+  script=$(cat "$build_dir/package.json" | $JQ --raw-output ".scripts[\"$script_name\"] // \"\"")
+
+  echo "Running $script_name (yarn)"
+  # yarn will throw an error if the script is an empty string, so check for this case
+  if [[ -n "$script" ]]; then
+    yarn --cwd="$build_dir" run "$script_name"
+  fi
+}
+
+echo "" || true
+echo "-----> Build" || true
+run_build_script "$BUILD_DIR" || true
